@@ -1,0 +1,395 @@
+---
+title: "NYPD Shooting Incident Data Analysis"
+date: "2022-07-30"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r load_library, include=FALSE}
+
+library(tidyverse)
+library(lubridate)
+
+```
+
+
+# Data Wrangling and Cleaning
+
+### Loading NYPD Shooting Incident Data Into RStudio
+
+For this analysis, I pulled historical shooting incident data from the NYPD, avaiable directly from the city of New York. However, because of the file size (>5MB), reading in the file directly from the website was an issue. Instead, I downloaded the file first (in a relative location) and then pulled it into R.
+
+```{r get_data, include=TRUE}
+
+# Download data into relative path:
+download.file("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD",
+              "NYCdata.csv")
+
+```
+
+```{r load_data, include=TRUE}
+
+# Load data into RStudio
+NYPD_Shootings <- read.csv("NYCdata.csv",check.names = FALSE)
+
+```
+
+### Removing Columns From Data That Are Not Needed
+
+For the first cleaning, I removed columns that I definitely would not need for my analysis. In this case, this includes any location data (latitude, longitude) and the incident identifier key.
+
+```{r remove_unused, include=TRUE}
+
+# Removing the columns not needed for analysis.
+NYPD_Shootings <- NYPD_Shootings %>% 
+  select(-c(Latitude, Longitude, Lon_Lat, X_COORD_CD, Y_COORD_CD, INCIDENT_KEY))
+
+```
+
+### Reformating Date and Time Columns
+
+In the data, there were two date / time columns that were being treated as characters instead of date or time formats. I converted them to their appropriate formats for my analysis.
+
+```{r data_format, include = TRUE}
+
+# Changing format of the Occurrence Dates (OCCUR_DATE)
+NYPD_Shootings <- NYPD_Shootings %>%
+  mutate(OCCUR_DATE = mdy(OCCUR_DATE))
+
+```
+
+```{r time_format, include = TRUE}
+
+# Changing format of Occurrence Times
+NYPD_Shootings <- NYPD_Shootings %>%
+  mutate(OCCUR_TIME = parse_time(OCCUR_TIME,format = "%H:%M:%S"))
+
+```
+
+### Checking For Missing Data
+
+Missing data will be problematic for the analysis, so I'm running some initial checks to see how the data looks and which columns have missing data (if any).
+
+```{r check_missing, include=TRUE}
+
+# Run a quick summary at high level and for each column
+summary(NYPD_Shootings)
+
+```
+```{r check_columns, include=TRUE}
+
+# Checking how many rows each variable should have
+length(NYPD_Shootings$OCCUR_DATE)
+
+```
+
+Based on the summary of the data set, the only column that has missing data is Jurisdiction Code (JURISDICTION_CODE). However, there are a few columns that have string / character data. These string columns are all showing as having a length of 25596, which is the total number of rows in the data set (based on OCCUR_DATE variable). It's possible that blanks are being treated as having data in these columns. Therefore, I'm going to make all blanks in these columns "NA", if applicable. 
+
+```{r recoding_blanks, include=TRUE}
+
+# Recoding blanks in character columns to NA
+NYPD_Shootings <- NYPD_Shootings %>%
+  mutate(across(c("LOCATION_DESC","STATISTICAL_MURDER_FLAG", "PERP_AGE_GROUP", "PERP_SEX", "PERP_RACE", "VIC_AGE_GROUP", "VIC_SEX", "VIC_RACE"), ~ifelse(.=="", NA, as.character(.))))
+
+```
+
+Now that blanks have an NA, I can check to see if any of these columns actually have any blanks.
+
+```{r check_nas, include=TRUE}
+
+# Checking number of missing values in each of the character columns
+sum(is.na(NYPD_Shootings$BORO))
+sum(is.na(NYPD_Shootings$LOCATION_DESC))
+sum(is.na(NYPD_Shootings$STATISTICAL_MURDER_FLAG))
+sum(is.na(NYPD_Shootings$PERP_AGE_GROUP))
+sum(is.na(NYPD_Shootings$PERP_SEX))
+sum(is.na(NYPD_Shootings$PERP_RACE))
+sum(is.na(NYPD_Shootings$VIC_AGE_GROUP))
+sum(is.na(NYPD_Shootings$VIC_SEX))
+sum(is.na(NYPD_Shootings$VIC_RACE))
+
+```
+
+So it looks like there is a lot of missing data from location descsription (LOCATION_DESC). Since this is so incomplete, it's not worth including in my analysis. Therefore, I dropped that column from my analysis. There is also some incomplete data around the perpetrators. I'm going to keep that data, however, in case I'm able to do some analysis later with it. It's possible that not all of the shooting incidents have been solved, which is why they are blank. It's also possible that the data is missing because it wasn't recorded correctly by the NYPD. It'll be interesting to look at in my analysis, but is also a point of potential bias that I'll have to keep an eye on.
+
+### Clean Out Columns With Incomplete Data
+
+The only columns I'm going to clean out because of missing data are LOCATION_DESC and Jurisdiction_Code. I don't need these for my analysis.
+
+```{r drop_emptycols, include=TRUE}
+
+NYPD_Shootings <- NYPD_Shootings %>%
+  select(-c(JURISDICTION_CODE, LOCATION_DESC))
+
+```
+
+# Data Visualization and Analysis
+
+For my analysis, I'm going to first analyze the data in terms of victims and then in terms of perpetrator.
+
+## Analysis of Victims in NYPD Shootings Data
+
+Before looking at the victims themselves, I'm going to explore how shootings vary by NYC Borough. Then I will dive further into specific demographics. I plan on mainly looking at the data from a Borough level.
+
+### Create Data Set for Analysis
+
+For this specific analysis, I'm going to create a data set that shows aggregated fatal shootings (murders), non-fatal shootings, and total shootings for each date in each borough. I'm also going to add / clean up a couple of columns to make it easier to potentially analyze the data.
+
+```{r victims_dataset, include=TRUE}
+
+# Isolate needed variables. Create counts of murders and non-murders.
+Shooting_Victims <- NYPD_Shootings %>%
+  group_by(BORO, OCCUR_DATE, OCCUR_TIME, PRECINCT, VIC_AGE_GROUP, VIC_SEX, VIC_RACE) %>%
+  summarise(Total_Murders = sum(STATISTICAL_MURDER_FLAG == 'true'),
+            Total_NonMurders = sum(STATISTICAL_MURDER_FLAG == 'false'),
+            Total_Shootings = sum(STATISTICAL_MURDER_FLAG == 'true' | STATISTICAL_MURDER_FLAG == 'false')) %>%
+  ungroup()
+
+# Create new column for filtering between murder and non-fatal shooting. Clean up the gender.
+Shooting_Victims <- Shooting_Victims %>%
+  mutate(Shooting_Victims, Shooting_Type = ifelse(Total_Murders>0,"Murder","Non-Fatal Shooting")) %>%
+  mutate(Shooting_Victims, VIC_SEX = recode(VIC_SEX,
+                                            "F"="Female",
+                                            "M"="Male",
+                                            "U"="Unknown"))
+
+
+```
+
+### Total Shootings by Borough
+
+Now that the data set is ready to use, let's look at how shootings vary by each of the five boroughs.
+
+```{r shooting_bars, include=TRUE}
+
+Shooting_Victims %>%
+  ggplot(aes(x = BORO, y = Total_Shootings)) +
+  geom_bar( stat = "identity", color = "navy") + 
+  ggtitle("Number of Shootings by NYC Borough") +
+  ylab("Total Number of Shootings") +
+  xlab("NYC Borough") +
+  ylim(0,10500)
+
+```
+
+Based on the data, Bronx and Brooklyn have seen the most shooting incidents. The fact that the wealthier boroughs like Manhattan and Staten island have seen less shooting violence implies that wealth may be a factor in this (aside from age, gender and race). However, this is not included in the data, so we'll recognize this as a potential source of bias and proceed with the analysis.
+
+Next I will explore the demographics of victims of shooting statistics within each borough to see if there are any interesting insights.
+
+### Total Shooting Victims by Borough and Gender
+
+```{r vic_gender, include=TRUE}
+
+Shooting_Victims %>%
+  ggplot(aes(x = VIC_SEX, y = Total_Shootings)) +
+  geom_bar(stat = "identity", aes(color = VIC_SEX, fill = VIC_SEX)) + 
+  ggtitle("Total Shooting Victims by Gender and Borough") +
+  ylab("Total Number of Shootings") +
+  xlab("Gender") +
+  ylim(0,10500) +
+  facet_wrap(~ BORO) +
+  theme(axis.text.x = element_blank())
+
+```
+
+Across boroughs, males tend to disproportionately be the victim of shootings in New York City. However, women are victims as well, at higher rates in some boroughs than others.
+
+### Total Shooting Victims by Age
+
+```{r vic_age, include=TRUE}
+
+Shooting_Victims %>%
+  ggplot(aes(x = VIC_AGE_GROUP, y = Total_Shootings)) +
+  geom_bar(stat = "identity", aes(color = VIC_AGE_GROUP, fill = VIC_AGE_GROUP)) + 
+  ggtitle("Total Shooting Victims by Age and Borough") +
+  ylab("Total Number of Shootings") +
+  xlab("Age") +
+  ylim(0,10500) +
+  facet_wrap(~ BORO) +
+  theme(axis.text.x = element_blank())
+
+```
+
+Shootings also appear to affect younger groups more disproportionately, particularly those between ages 18-43. However, this may be related to socioeconomic factors since there are many among this age group that aren't victims of gun violence.
+
+### Total Shooting Victims by Race
+
+```{r vic_race, include=TRUE}
+
+Shooting_Victims %>%
+  ggplot(aes(x = VIC_RACE, y = Total_Shootings)) +
+  geom_bar(stat = "identity", aes(color = VIC_RACE, fill = VIC_RACE)) + 
+  ggtitle("Total Shooting Victims by Race and Borough") +
+  ylab("Total Number of Shootings") +
+  xlab("Race") +
+  ylim(0,10500) +
+  facet_wrap(~ BORO) +
+  theme(axis.text.x = element_blank())
+
+```
+
+The data here shows that certain races and ethnicity (particularly African American and Hispanics) are disproportionately the victims of gun violence. However, other factors may be at play here like wealth. It's important to recognize these external factors before drawing conclusions from this data, otherwise it may bias the results.
+
+## Analysis of Perpetrator Data in NYPD Shootings Data Set
+
+For this second analysis, I'm going to look at the available perpetrator data and see if I can draw any insights. As a note, this data is incomplete, so I will focus only on the available data. Based on the footnotes from the City of New York database, it's unclear whether blanks mean the perpetrator has not been caught or if its due to clerical error. Therefore, it's important to recognize this as a potential source of bias. For this analysis, I'm going to look at perpetrator demographics from both the total city level and by each of the five boroughs.
+
+### Create Data Set for Analysis
+
+For this analysis, I'm going to create a similar data set to the previous one (with aggregated totals for murders and shootings) and only relevant columns. The perpetrator demographic columns are not as clean as others, so I made filters to isolate only valid data (excluding missing, unknown, or illogical data points).
+
+```{r Perp_Dataset, include=TRUE}
+
+# Create data set with only needed variables. Create a Total_Shootings and Total_Murders column. 
+Perp_Dataset <- NYPD_Shootings %>%
+  group_by(BORO, OCCUR_DATE, OCCUR_TIME, PRECINCT, PERP_AGE_GROUP, PERP_SEX, PERP_RACE) %>%
+  summarise(Total_Murders = sum(STATISTICAL_MURDER_FLAG == 'true'),
+            Total_Shootings = sum(STATISTICAL_MURDER_FLAG == 'true' | STATISTICAL_MURDER_FLAG == 'false')) %>%
+  ungroup()
+
+# Create a column for Perpetrator Data Known for Age, Sex and Race
+Perp_Dataset <- Perp_Dataset %>%
+  mutate(Perp_Age_Avail = ifelse( is.na(PERP_AGE_GROUP) | PERP_AGE_GROUP =="UNKNOWN" | PERP_AGE_GROUP =="1020" | PERP_AGE_GROUP == "940" | PERP_AGE_GROUP == "224","No","Yes")) %>%
+  mutate(Perp_Sex_Avail = ifelse( is.na(PERP_SEX) | PERP_SEX =="U","No","Yes")) %>%
+  mutate(Perp_Race_Avail = ifelse( is.na(PERP_RACE) | PERP_RACE == "UNKNOWN", "No", "Yes"))
+  
+
+```
+
+### Shooting Incident Perpetrator by Age (Total and Borough)
+
+```{r perp_age, include=TRUE}
+
+Perp_Dataset %>%
+  filter(Perp_Age_Avail == "Yes") %>%
+  ggplot(aes(x = PERP_AGE_GROUP, y = Total_Shootings)) +
+  geom_bar(stat = "identity", aes(color = PERP_AGE_GROUP, fill = PERP_AGE_GROUP)) + 
+  ggtitle("Total Shooting Perpetrators by Age") +
+  ylab("Total Number of Shootings") +
+  xlab("Age") +
+  theme(legend.position = "none")
+
+Perp_Dataset %>%
+  filter(Perp_Age_Avail == "Yes") %>%
+  ggplot(aes(x = PERP_AGE_GROUP, y = Total_Shootings)) +
+  geom_bar(stat = "identity", aes(color = PERP_AGE_GROUP, fill = PERP_AGE_GROUP)) + 
+  ggtitle("Total Shooting Perpetrators by Age and Borough") +
+  ylab("Total Number of Shootings") +
+  xlab("Age") +
+  facet_wrap(~ BORO) +
+  theme(axis.text.x = element_blank())
+
+
+```
+
+Among the data available, 18-24 year-olds tend to be most likely to be involved in shooting crime, especially in the poorer areas of the Bronx and Brooklyn. However, this data may be biased because the perpetrator information is incomplete.
+
+### Shooting Incident Perpetrator by Sex (Total and Borough)
+
+```{r perp_sex, include=TRUE}
+
+Perp_Dataset %>%
+  filter(Perp_Sex_Avail == "Yes") %>%
+  ggplot(aes(x = PERP_SEX, y = Total_Shootings)) +
+  geom_bar(stat = "identity", aes(color = PERP_SEX, fill = PERP_SEX)) + 
+  ggtitle("Total Shooting Perpetrators by Sex") +
+  ylab("Total Number of Shootings") +
+  xlab("Sex") +
+  theme(legend.position = "none")
+
+Perp_Dataset %>%
+  filter(Perp_Sex_Avail == "Yes") %>%
+  ggplot(aes(x = PERP_SEX, y = Total_Shootings)) +
+  geom_bar(stat = "identity", aes(color = PERP_SEX, fill = PERP_SEX)) + 
+  ggtitle("Total Shooting Perpetrators by Sex and Borough") +
+  ylab("Total Number of Shootings") +
+  xlab("Sex") +
+  facet_wrap(~ BORO) +
+  theme(axis.text.x = element_blank())
+
+```
+
+Shooters also tend to be pre-dominantly male. However, this data may also be biased because the perpetrator information is incomplete. However, it does suggest that young men are shooting young men.
+
+### Shooting Incident Perpetrator by Race (Total and Borough)
+
+```{r perp_race, include=TRUE}
+
+Perp_Dataset %>%
+  filter(Perp_Race_Avail == "Yes") %>%
+  ggplot(aes(x = PERP_RACE, y = Total_Shootings)) +
+  geom_bar(stat = "identity", aes(color = PERP_RACE, fill = PERP_RACE)) + 
+  ggtitle("Total Shooting Perpetrators by Race") +
+  ylab("Total Number of Shootings") +
+  xlab("Race") +
+  theme(axis.text.x = element_blank())
+
+Perp_Dataset %>%
+  filter(Perp_Race_Avail == "Yes") %>%
+  ggplot(aes(x = PERP_RACE, y = Total_Shootings)) +
+  geom_bar(stat = "identity", aes(color = PERP_RACE, fill = PERP_RACE)) + 
+  ggtitle("Total Shooting Perpetrators by Race and Borough") +
+  ylab("Total Number of Shootings") +
+  xlab("Race") +
+  facet_wrap(~ BORO) +
+  theme(axis.text.x = element_blank())
+
+```
+
+According to the data available, shooters in New York City across boroughs tend to be of African American descent. However, a significant portion of the perpetrator data isn't available for the other shootings, so this may be skewing things. To avoid bias, it's not possible to draw direct conclusions on the relationship between race and shootings.
+
+# Further Analysis and Modeling
+
+As a further thought experiment, I'm going to create a model of the relationship between shootings and murders, and whether NYC is above, below, or consistent with  this model's predictions on murders.
+
+## Modeling Predicted Murders by Total Shootings (NYC)
+
+First, I'm going to create a data set that aggregates the cumulative number of shootings and murders in the city. Then I'm going to predict the number of murders that should occur in the city based on the model. Then, I will plot the data to see how the prediction compares to real live.
+
+```{r Murder_Modeling_Tot, include=TRUE}
+
+# Prepare Data Set
+VicModel <- Shooting_Victims %>%
+  arrange(OCCUR_DATE, OCCUR_TIME) %>%
+  mutate(agg_shootings = cumsum(Total_Shootings)) %>%
+  mutate(agg_murders = cumsum(Total_Murders))
+
+# Create Prediction Model
+mod <- lm(agg_murders ~ agg_shootings, data=VicModel)
+
+# Create Prediction Model Data Set
+VicModel_pred <- VicModel %>%
+  mutate(pred = predict(mod))
+
+```
+
+```{r Murder_Modeling_Tot_Chart, include=TRUE}
+
+# Graph Actual Results Compared to Model's Prediction
+VicModel_pred %>% 
+  ggplot() +
+  geom_point(aes(x = agg_shootings, y = agg_murders, color="blue")) +
+  geom_point(aes(x = agg_shootings, y = pred, color="red")) + 
+  scale_color_manual(labels = c("Actual", "Predicted"), values = c("blue", "red"))
+
+
+```
+
+Based on the chart, it's clear that the shootings in NYC are consistent with the predicted model. Murders increase as a direct result of more shootings. There is some slightly variation in some places, where actual is above the model. Perhaps this is due to borough variation. How would it look on a borough by borough basis? Are there any boroughs that are performing better or worse than expected? These are questions that arise from this analysis that would be interesting for future analysis.
+
+# Conclusion
+
+That concludes my analysis of the historical NYPD Shooting Incident Data Set. Based on my analysis, the data suggest that shooting crimes disproportionately affect younger age groups, males and certain racial group. Especially in terms of victims. It's difficult to make any concreate conclusions about perpetrators because of missing data.
+
+To avoid bias, I only relied on what the data set showed. I also considered what the data set was missing (in terms of critical information and other outside factors). The data shows that shootings make victims of everyone, but did suggest that it affected some groups more. However, a critical piece of information that is missing is socioeconomic measures, as this may be more of a predictor than age, gender and race. This goes for both victims and perpetrators. A significant portion of the perpetrator data is missing from the data set. It's possible that any conclusions from the data would be misleading or directional. Therefore, it may be prone to bias.
+
+This was definitely an interesting exercise. However, the data it shows is limited and there are many other factors that come into play. Why did Manhattan have lower shootings than Brooklyn? Does policing vary by borough? What factor does income and socioeconomic status play? All of these things are critical to understanding what happened. Solely looking at this data, when only race, gender and age are available, is likely misleading.
+
+# Session Information
+
+```{r sess_info, echo=FALSE}
+
+sessionInfo()
+
+```
